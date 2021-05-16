@@ -470,10 +470,55 @@ static jv f_dump(jq_state *jq, jv input) {
 static jv f_json_parse(jq_state *jq, jv input) {
   if (jv_get_kind(input) != JV_KIND_STRING)
     return type_error(input, "only strings can be parsed");
-  jv res = jv_parse_sized(jv_string_value(input),
-                          jv_string_length_bytes(jv_copy(input)));
+
+  const char* i = jv_string_value(input);
+  const char* end = i + jv_string_length_bytes(jv_copy(input));
+
+  struct jv_parser* parser = jv_parser_new(0);
+  int count = 0;
+  jv value = jv_invalid();
+  while (i != NULL) {
+    const int max_utf8_len = 4;
+    unsigned char buf[100 + max_utf8_len];
+    int buflen = 0;
+    int c;
+    while ((buflen + max_utf8_len < sizeof(buf)) && (i = jvp_utf8_extended_next(i, end, JVP_UTF8_REPLACE | JVP_UTF8_ERRORS_UTF8, &c))) {
+      if (c >= -0xFF && c <= -0x80) {
+        // Invalid UTF-8 byte, pass through
+        buf[buflen++] = -c;
+      } else
+        buflen += jvp_utf8_encode(c, buf + buflen);
+    }
+    jv_parser_set_buf(parser, buf, buflen, i != NULL);
+    for (;;) {
+      jv next = jv_parser_next(parser);
+      if (!jv_is_valid(next)) {
+        if (jv_invalid_has_msg(jv_copy(next))) {
+          count++;
+          jv_free(value);
+          value = next;
+          i = NULL;
+        }
+        break;
+      }
+      jv_free(value);
+      if (count++ == 0)
+        value = next;
+      else {
+        jv_free(next);
+        value = jv_invalid_with_msg(jv_string("Unexpected extra JSON values"));
+        i = NULL;
+        break;
+      }
+    }
+  }
+  jv_parser_free(parser);
   jv_free(input);
-  return res;
+  if (count == 0) {
+    jv_free(value);
+    value = jv_invalid_with_msg(jv_string("Expected JSON value"));
+  }
+  return value;
 }
 
 static jv f_tonumber(jq_state *jq, jv input) {
@@ -520,7 +565,19 @@ static jv f_tostring(jq_state *jq, jv input) {
 static jv f_utf8bytelength(jq_state *jq, jv input) {
   if (jv_get_kind(input) != JV_KIND_STRING)
     return type_error(input, "only strings have UTF-8 byte length");
-  return jv_number(jv_string_length_bytes(input));
+  const char* i = jv_string_value(input);
+  const char* end = i + jv_string_length_bytes(jv_copy(input));
+  int len = 0;
+  int c;
+  while ((i = jvp_utf8_extended_next(i, end, JVP_UTF8_REPLACE | JVP_UTF8_ERRORS_UTF8, &c))) {
+    if (c >= -0xFF && c <= -0x80) {
+      // Invalid UTF-8 byte, will be passed through
+      len++;
+    } else
+      len += jvp_utf8_encode_length(c);
+  }
+  jv_free(input);
+  return jv_number(len);
 }
 
 #define CHARS_ALPHANUM "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
@@ -695,21 +752,41 @@ static jv f_format(jq_state *jq, jv input, jv fmt) {
     jv_free(fmt);
     input = f_tostring(jq, input);
     jv line = jv_string("");
-    const unsigned char* data = (const unsigned char*)jv_string_value(input);
-    int len = jv_string_length_bytes(jv_copy(input));
-    for (int i=0; i<len; i+=3) {
-      uint32_t code = 0;
-      int n = len - i >= 3 ? 3 : len-i;
-      for (int j=0; j<3; j++) {
+    const char* i = jv_string_value(input);
+    const char* end = i + jv_string_length_bytes(jv_copy(input));
+    uint32_t code = 0;
+    int n = 0;
+    int c;
+    while ((i = jvp_utf8_extended_next(i, end, JVP_UTF8_REPLACE | JVP_UTF8_ERRORS_UTF8, &c))) {
+      unsigned char ubuf[4];
+      int len = 0;
+      if (c >= -0xFF && c <= -0x80) {
+        // Invalid UTF-8 byte, pass through
+        ubuf[len++] = -c;
+      } else
+        len += jvp_utf8_encode(c, ubuf);
+      for (int x = 0; x < len; x++) {
         code <<= 8;
-        code |= j < n ? (unsigned)data[i+j] : 0;
+        code |= ubuf[x];
+        if (++n == 3) {
+          char buf[4];
+          for (int j = 0; j < 4; j++)
+            buf[j] = BASE64_ENCODE_TABLE[(code >> (18 - j*6)) & 0x3f];
+          line = jv_string_append_buf(line, buf, sizeof(buf));
+          n = 0;
+          code = 0;
+        }
       }
+    }
+    if (n > 0) {
+      assert(n < 3);
+      code <<= 8*(3 - n);
       char buf[4];
-      for (int j=0; j<4; j++) {
+      for (int j = 0; j < 4; j++)
         buf[j] = BASE64_ENCODE_TABLE[(code >> (18 - j*6)) & 0x3f];
-      }
-      if (n < 3) buf[3] = '=';
-      if (n < 2) buf[2] = '=';
+      buf[3] = '=';
+      if (n < 2)
+        buf[2] = '=';
       line = jv_string_append_buf(line, buf, sizeof(buf));
     }
     jv_free(input);
