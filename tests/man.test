@@ -424,9 +424,29 @@ sqrt
 "1"
 "[1]"
 
-map(type)
-[0, false, [], {}, null, "hello"]
-["number", "boolean", "array", "object", "null", "string"]
+tobinary|tostring
+"á"
+"w6E="
+
+tobinary(195,161)|encodeas("UTF-8")|tostring
+null
+"á"
+
+tobinary|encodeas("base64")|tostring
+"á"
+"w6E="
+
+tobinary|encodeas("bytearray")|tostring
+"á"
+[195,161]
+
+tobinary|encodeas("UTF-8")|tostring
+"á"
+"á"
+
+[(tostring,tobinary,(tobinary|encodeas("bytearray")),(tobinary|encodeas("UTF-8")))|[type,stringtype,encoding]]
+"foo"
+[["string","UTF-8","UTF-8"],["string","binary","base64"],["string","binary","bytearray"],["string","binary","UTF-8"]]
 
 .[] | (infinite * .) < 0
 [-1, 1]

@@ -11,6 +11,7 @@
 
 #include "jv_alloc.h"
 #include "jq_parser.h"
+#include "jv_unicode.h"
 #include "locfile.h"
 #include "jv.h"
 #include "jq.h"
@@ -673,20 +674,48 @@ jv jq_next(jq_state *jq) {
     case INDEX_OPT: {
       jv t = stack_pop(jq);
       jv k = stack_pop(jq);
-      // detect invalid path expression like path(reverse | .a)
-      if (!path_intact(jq, jv_copy(t))) {
-        char keybuf[15];
-        char objbuf[30];
-        jv msg = jv_string_fmt(
-            "Invalid path expression near attempt to access element %s of %s",
-            jv_dump_string_trunc(k, keybuf, sizeof(keybuf)),
-            jv_dump_string_trunc(t, objbuf, sizeof(objbuf)));
-        set_error(jq, jv_invalid_with_msg(msg));
-        goto do_backtrack;
+      jv v;
+      if (jv_get_kind(t) == JV_KIND_STRING && jv_get_kind(k) == JV_KIND_NUMBER) {
+        switch (jv_get_string_kind(t)) {
+        case JV_STRING_KIND_UTF8:
+          v = jv_string_append_codepoint(jv_string(""), jv_string_index(t, jv_number_value(k)));
+          break;
+        case JV_STRING_KIND_BINARY:
+        case JV_STRING_KIND_BINARY_BYTEARRAY:
+        case JV_STRING_KIND_BINARY_UTF8: {
+          const char *s = jv_string_value(t);
+          int len = jv_string_length_bytes(jv_copy(t));
+          int idx = jv_number_value(k);
+
+          if (idx < 0)
+            idx += idx;
+          if (idx < 0 || idx >= len)
+            goto do_backtrack;
+          v = jv_number(((unsigned char *)s)[idx]);
+          jv_free(t);
+          break;
+        }
+        default:
+          set_error(jq, jv_invalid_with_msg(jv_string("Internal error: unknown string sub-type")));
+          goto do_backtrack;
+        }
+      } else {
+        // detect invalid path expression like path(reverse | .a)
+        if (!path_intact(jq, jv_copy(t))) {
+          char keybuf[15];
+          char objbuf[30];
+          jv msg = jv_string_fmt(
+                                 "Invalid path expression near attempt to access element %s of %s",
+                                 jv_dump_string_trunc(k, keybuf, sizeof(keybuf)),
+                                 jv_dump_string_trunc(t, objbuf, sizeof(objbuf)));
+          set_error(jq, jv_invalid_with_msg(msg));
+          goto do_backtrack;
+        }
+        v = jv_get(t, jv_copy(k));
+        if (jv_is_valid(v))
+          path_append(jq, k, jv_copy(v));
       }
-      jv v = jv_get(t, jv_copy(k));
       if (jv_is_valid(v)) {
-        path_append(jq, k, jv_copy(v));
         stack_push(jq, v);
       } else {
         jv_free(k);
@@ -721,7 +750,8 @@ jv jq_next(jq_state *jq) {
     case EACH_OPT: {
       jv container = stack_pop(jq);
       // detect invalid path expression like path(reverse | .[])
-      if (!path_intact(jq, jv_copy(container))) {
+      if (jv_get_kind(container) != JV_KIND_STRING &&
+          !path_intact(jq, jv_copy(container))) {
         char errbuf[30];
         jv msg = jv_string_fmt(
             "Invalid path expression near attempt to iterate through %s",
@@ -758,6 +788,45 @@ jv jq_next(jq_state *jq) {
           key = jv_object_iter_key(container, idx);
           value = jv_object_iter_value(container, idx);
         }
+      } else if (jv_get_kind(container) == JV_KIND_STRING) {
+        switch (jv_get_string_kind(container)) {
+        case JV_STRING_KIND_UTF8: {
+          const char *s = jv_string_value(container);
+          const char *next = s;
+          int len = jv_string_length_bytes(jv_copy(container));
+          const char *end = s + len;
+          int c;
+          if (opcode == EACH || opcode == EACH_OPT) {
+            idx = 0;
+          } else {
+            next = s + idx;
+          }
+          keep_going = idx < len;
+          next = jvp_utf8_next(next, end, &c);
+          idx = next - s;
+          value = jv_string_append_codepoint(jv_string(""), c);
+          is_last = jvp_utf8_next(next, end, &c) == 0;
+          break;
+        }
+        case JV_STRING_KIND_BINARY:
+        case JV_STRING_KIND_BINARY_BYTEARRAY:
+        case JV_STRING_KIND_BINARY_UTF8: {
+          const unsigned char *s = (const unsigned char *)jv_string_value(container);
+          int len = jv_string_length_bytes(jv_copy(container));
+          if (opcode == EACH || opcode == EACH_OPT) {
+            idx = 0;
+          } else {
+            idx++;
+          }
+          keep_going = idx < len;
+          value = jv_string_append_codepoint(jv_string(""), s[idx]);
+          is_last = idx == len -1;
+          break;
+        }
+        default:
+          set_error(jq, jv_invalid_with_msg(jv_string("Internal error: unknown string sub-type")));
+          goto do_backtrack;
+        }
       } else {
         assert(opcode == EACH || opcode == EACH_OPT);
         if (opcode == EACH) {
@@ -777,15 +846,17 @@ jv jq_next(jq_state *jq) {
         goto do_backtrack;
       } else if (is_last) {
         // we don't need to make a backtrack point
-        jv_free(container);
-        path_append(jq, key, jv_copy(value));
+        if (jv_get_kind(container) != JV_KIND_STRING)
+          path_append(jq, key, jv_copy(value));
         stack_push(jq, value);
+        jv_free(container);
       } else {
         struct stack_pos spos = stack_get_pos(jq);
         stack_push(jq, container);
         stack_push(jq, jv_number(idx));
         stack_save(jq, pc - 1, spos);
-        path_append(jq, key, jv_copy(value));
+        if (jv_get_kind(container) != JV_KIND_STRING)
+          path_append(jq, key, jv_copy(value));
         stack_push(jq, value);
       }
       break;

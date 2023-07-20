@@ -774,6 +774,9 @@ sections:
           `null` can be added to any value, and returns the other
           value unchanged.
 
+          A numeric byte value between 0 and 255, inclusive, can be
+          added to a binary string value.
+
         examples:
           - program: '.a + 1'
             input: '{"a": 7}'
@@ -1407,14 +1410,75 @@ sections:
       - title: "`tostring`"
         body: |
 
-          The `tostring` function prints its input as a
-          string. Strings are left unchanged, and all other values are
-          JSON-encoded.
+          The `tostring` function prints its input as a string.
+          Binary strings are encoded accoring to the encoding selected
+          for them; see see `tobinary`, `encodeas`, and `encoding`).
+          If a binary string's output encoding is a `"bytearray"` then
+          `tostring` will output an array of unsigned byte values.
+          Text strings are left unchanged, and all non-text,
+          non-binary values are formatted as JSON texts.
 
         examples:
           - program: '.[] | tostring'
             input: '[1, "1", [1]]'
             output: ['"1"', '"1"', '"[1]"']
+
+      - title: "`tobinary`"
+        body: |
+
+          The `tobinary` function is like `tostring`, but its output
+          will be a string which when output to jq's output stream
+          will be base64-encoded, and which if added with other
+          strings will produce a binary string value.
+
+          Internally the binary string may be represented efficiently,
+          and may not be encoded until it is output or until it is
+          passed to `tostring`.  Adding a byte value (integer value
+          between 0 and 255, inclusive) to a binary string is allowed,
+          and will append that byte to it.
+
+          In all cases the external representation of a binary value on
+          output will be an encoding of that binary value, which may
+          be selected with the `encodeas` function.
+
+        examples:
+          - program: 'tobinary|tostring'
+            input: '"á"'
+            output: ['"w6E="']
+
+      - title: "`tobinary(bytes)`"
+        body: |
+
+          This function constructs a binary string value like
+          `tobinary` but consisting of the byte values output by
+          `bytes`.
+
+        examples:
+          - program: 'tobinary(195,161)|encodeas("UTF-8")|tostring'
+            input: 'null'
+            output: ['"á"']
+
+      - title: "`encodeas($encoding)`"
+        body: |
+
+          This function sets the encoding of any binary string input
+          to the given `$encoding`, which must be one of `"UTF-8"`
+          (apply bad character mappings), `"$base64"` (encode binary
+          in base64), or `"$bytearray"` (encode binary as an array of
+          unsigned byte values).  The result will be encoded
+          accordingly when when passed to `tostring` or when finally
+          output by jq to `stdout` or `stderr`.
+
+        examples:
+          - program: 'tobinary|encodeas("base64")|tostring'
+            input: '"á"'
+            output: ['"w6E="']
+          - program: 'tobinary|encodeas("bytearray")|tostring'
+            input: '"á"'
+            output: ['[195,161]']
+          - program: 'tobinary|encodeas("UTF-8")|tostring'
+            input: '"á"'
+            output: ['"á"']
 
       - title: "`type`"
         body: |
@@ -1423,10 +1487,25 @@ sections:
           string, which is one of null, boolean, number, string, array
           or object.
 
+      - title: "`stringtype`"
+        body: |
+
+          Strings can be UTF-8 strings or binary strings.  The
+          `stringtype` builtin outputs `"UTF-8"` or `"binary"` when
+          given a string as input.
+
+      - title: "`encoding`"
+        body: |
+
+          Outputs either `"UTF-8"`, `"base64"`, or `"bytearray"`,
+          depending on whether the string is a plain text string or a
+          binary string and what output encoding was applied to the
+          binary string with `encodeas` (default is `"base64"`).
+
         examples:
-          - program: 'map(type)'
-            input: '[0, false, [], {}, null, "hello"]'
-            output: ['["number", "boolean", "array", "object", "null", "string"]']
+          - program: '[(tostring,tobinary,(tobinary|encodeas("bytearray")),(tobinary|encodeas("UTF-8")))|[type,stringtype,encoding]]'
+            input: '"foo"'
+            output: ['[["string","UTF-8","UTF-8"],["string","binary","base64"],["string","binary","bytearray"],["string","binary","UTF-8"]]']
 
       - title: "`infinite`, `nan`, `isinfinite`, `isnan`, `isfinite`, `isnormal`"
         body: |
@@ -2040,7 +2119,9 @@ sections:
           * `@base64d`:
 
             The inverse of `@base64`, input is decoded as specified by RFC 4648.
-            Note\: If the decoded string is not UTF-8, the results are undefined.
+            The result will be a binary string as if `tobinary|encodeas("UTF-8")`
+            was used, meaning that on output bad characters will be
+            replaced.
 
           This syntax can be combined with string interpolation in a
           useful way. You can follow a `@foo` token with a string

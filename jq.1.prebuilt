@@ -742,6 +742,9 @@ The operator \fB+\fR takes two filters, applies them both to the same input, and
 .P
 \fBnull\fR can be added to any value, and returns the other value unchanged\.
 .
+.P
+A numeric byte value between 0 and 255, inclusive, can be added to a binary string value\.
+.
 .IP "" 4
 .
 .nf
@@ -1479,7 +1482,7 @@ jq \'\.[] | tonumber\'
 .IP "" 0
 .
 .SS "tostring"
-The \fBtostring\fR function prints its input as a string\. Strings are left unchanged, and all other values are JSON\-encoded\.
+The \fBtostring\fR function prints its input as a string\. Binary strings are encoded accoring to the encoding selected for them; see see \fBtobinary\fR, \fBencodeas\fR, and \fBencoding\fR)\. If a binary string\'s output encoding is a \fB"bytearray"\fR then \fBtostring\fR will output an array of unsigned byte values\. Text strings are left unchanged, and all non\-text, non\-binary values are formatted as JSON texts\.
 .
 .IP "" 4
 .
@@ -1493,16 +1496,81 @@ jq \'\.[] | tostring\'
 .
 .IP "" 0
 .
-.SS "type"
-The \fBtype\fR function returns the type of its argument as a string, which is one of null, boolean, number, string, array or object\.
+.SS "tobinary"
+The \fBtobinary\fR function is like \fBtostring\fR, but its output will be a string which when output to jq\'s output stream will be base64\-encoded, and which if added with other strings will produce a binary string value\.
+.
+.P
+Internally the binary string may be represented efficiently, and may not be encoded until it is output or until it is passed to \fBtostring\fR\. Adding a byte value (integer value between 0 and 255, inclusive) to a binary string is allowed, and will append that byte to it\.
+.
+.P
+In all cases the external representation of a binary value on output will be an encoding of that binary value, which may be selected with the \fBencodeas\fR function\.
 .
 .IP "" 4
 .
 .nf
 
-jq \'map(type)\'
-   [0, false, [], {}, null, "hello"]
-=> ["number", "boolean", "array", "object", "null", "string"]
+jq \'tobinary|tostring\'
+   "á"
+=> "w6E="
+.
+.fi
+.
+.IP "" 0
+.
+.SS "tobinary(bytes)"
+This function constructs a binary string value like \fBtobinary\fR but consisting of the byte values output by \fBbytes\fR\.
+.
+.IP "" 4
+.
+.nf
+
+jq \'tobinary(195,161)|encodeas("UTF\-8")|tostring\'
+   null
+=> "á"
+.
+.fi
+.
+.IP "" 0
+.
+.SS "encodeas($encoding)"
+This function sets the encoding of any binary string input to the given \fB$encoding\fR, which must be one of \fB"UTF\-8"\fR (apply bad character mappings), \fB"$base64"\fR (encode binary in base64), or \fB"$bytearray"\fR (encode binary as an array of unsigned byte values)\. The result will be encoded accordingly when when passed to \fBtostring\fR or when finally output by jq to \fBstdout\fR or \fBstderr\fR\.
+.
+.IP "" 4
+.
+.nf
+
+jq \'tobinary|encodeas("base64")|tostring\'
+   "á"
+=> "w6E="
+
+jq \'tobinary|encodeas("bytearray")|tostring\'
+   "á"
+=> [195,161]
+
+jq \'tobinary|encodeas("UTF\-8")|tostring\'
+   "á"
+=> "á"
+.
+.fi
+.
+.IP "" 0
+.
+.SS "type"
+The \fBtype\fR function returns the type of its argument as a string, which is one of null, boolean, number, string, array or object\.
+.
+.SS "stringtype"
+Strings can be UTF\-8 strings or binary strings\. The \fBstringtype\fR builtin outputs \fB"UTF\-8"\fR or \fB"binary"\fR when given a string as input\.
+.
+.SS "encoding"
+Outputs either \fB"UTF\-8"\fR, \fB"base64"\fR, or \fB"bytearray"\fR, depending on whether the string is a plain text string or a binary string and what output encoding was applied to the binary string with \fBencodeas\fR (default is \fB"base64"\fR)\.
+.
+.IP "" 4
+.
+.nf
+
+jq \'[(tostring,tobinary,(tobinary|encodeas("bytearray")),(tobinary|encodeas("UTF\-8")))|[type,stringtype,encoding]]\'
+   "foo"
+=> [["string","UTF\-8","UTF\-8"],["string","binary","base64"],["string","binary","bytearray"],["string","binary","UTF\-8"]]
 .
 .fi
 .
@@ -2226,7 +2294,7 @@ The input is converted to base64 as specified by RFC 4648\.
 \fB@base64d\fR:
 .
 .IP
-The inverse of \fB@base64\fR, input is decoded as specified by RFC 4648\. Note\e: If the decoded string is not UTF\-8, the results are undefined\.
+The inverse of \fB@base64\fR, input is decoded as specified by RFC 4648\. The result will be a binary string as if \fBtobinary|encodeas("UTF\-8")\fR was used, meaning that on output bad characters will be replaced\.
 .
 .P
 This syntax can be combined with string interpolation in a useful way\. You can follow a \fB@foo\fR token with a string literal\. The contents of the string literal will \fInot\fR be escaped\. However, all interpolations made inside that string literal will be escaped\. For instance,

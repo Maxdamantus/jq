@@ -179,6 +179,15 @@ static int process(jq_state *jq, jv value, int flags, int dumpopts, int options)
   jv result;
   while (jv_is_valid(result = jq_next(jq))) {
     if ((options & RAW_OUTPUT) && jv_get_kind(result) == JV_KIND_STRING) {
+      switch (jv_get_string_kind(result)) {
+      case JV_STRING_KIND_UTF8:
+        break;
+      default:
+        result = jv_string_from_binary(result);
+        if (jv_get_kind(result) != JV_KIND_STRING)
+          result = jv_dump_string(result, 0);
+        break;
+      }
       if (options & ASCII_OUTPUT) {
         jv_dumpf(jv_copy(result), stdout, JV_PRINT_ASCII);
       } else {
