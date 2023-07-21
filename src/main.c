@@ -31,6 +31,7 @@ extern void jv_tsd_dtoa_ctx_init();
 #include "jv.h"
 #include "jq.h"
 #include "jv_alloc.h"
+#include "jv_unicode.h"
 #include "util.h"
 #include "src/version.h"
 
@@ -173,6 +174,30 @@ static const char *skip_shebang(const char *p) {
   return n+1;
 }
 
+static void jvp_dump_raw_string(const char* start, const char* end, FILE* f, int is_tty) {
+  static const unsigned char UTF8_REPLACEMENT[] = {0xEF,0xBF,0xBD}; // U+FFFD REPLACEMENT CHARACTER
+
+  const char* i = start;
+  const char* cstart;
+  int c;
+
+  while ((i = jvp_utf8_extended_next((cstart = i), end, JVP_UTF8_ERRORS_ALL, &c))) {
+    if (c >= -0xFF && c <= -0x80) {
+      // invalid UTF-8 byte; pass through
+      priv_fwrite(start, cstart - start, f, is_tty);
+      start = i;
+      priv_fwrite((char []) { -c }, 1, f, is_tty);
+    } else if ((c >= 0xD800 && c <= 0xDFFF) || c == -1) {
+      // lone surrugate; can't be encoded to UTF-8
+      priv_fwrite(start, cstart - start, f, is_tty);
+      start = i;
+      priv_fwrite((const char*)UTF8_REPLACEMENT, sizeof(UTF8_REPLACEMENT), f, is_tty);
+    } else
+      continue;
+  }
+  fwrite(start, 1, end - start, f);
+}
+
 static int process(jq_state *jq, jv value, int flags, int dumpopts, int options) {
   int ret = JQ_OK_NO_OUTPUT; // No valid results && -e -> exit(4)
   jq_start(jq, value, flags);
@@ -182,8 +207,9 @@ static int process(jq_state *jq, jv value, int flags, int dumpopts, int options)
       if (options & ASCII_OUTPUT) {
         jv_dumpf(jv_copy(result), stdout, JV_PRINT_ASCII);
       } else {
-        priv_fwrite(jv_string_value(result), jv_string_length_bytes(jv_copy(result)),
-            stdout, dumpopts & JV_PRINT_ISATTY);
+        const char *start = jv_string_value(result);
+        const char *end = start + jv_string_length_bytes(jv_copy(result));
+        jvp_dump_raw_string(start, end, stdout, dumpopts & JV_PRINT_ISATTY);
       }
       ret = JQ_OK;
       jv_free(result);
