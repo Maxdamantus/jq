@@ -138,7 +138,7 @@ int jv_string_length_bytes(jv);
 int jv_string_length_codepoints(jv);
 unsigned long jv_string_hash(jv);
 const char* jv_string_value(jv);
-uint32_t jv_string_index(jv, int);
+int jv_string_index(jv, int);
 jv jv_string_indexes(jv j, jv k);
 jv jv_string_slice(jv j, int start, int end);
 jv jv_string_concat(jv, jv);

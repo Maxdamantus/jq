@@ -561,7 +561,7 @@ static jv escape_string(jv input, const char* escapings) {
   const char* i = jv_string_value(input);
   const char* end = i + jv_string_length_bytes(jv_copy(input));
   const char* cstart;
-  uint32_t c = 0;
+  int c = 0;
   while ((i = jvp_utf8_next((cstart = i), end, &c))) {
     if (c < 128 && lookup[c]) {
       ret = jv_string_append_str(ret, lookup[c]);

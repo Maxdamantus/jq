@@ -1112,10 +1112,10 @@ static jv jvp_string_copy_replace_bad(const char* data, uint32_t length) {
   uint32_t maxlength = length * 3 + 1; // worst case: all bad bytes, each becomes a 3-byte U+FFFD
   jvp_string* s = jvp_string_alloc(maxlength);
   char* out = s->data;
-  uint32_t c = 0;
+  int c = 0;
 
   while ((i = jvp_utf8_next((cstart = i), end, &c))) {
-    if (c == (uint32_t)-1) {
+    if (c == -1) {
       c = 0xFFFD; // U+FFFD REPLACEMENT CHARACTER
     }
     out += jvp_utf8_encode(c, out);
@@ -1465,18 +1465,18 @@ int jv_string_length_codepoints(jv j) {
   assert(JVP_HAS_KIND(j, JV_KIND_STRING));
   const char* i = jv_string_value(j);
   const char* end = i + jv_string_length_bytes(jv_copy(j));
-  uint32_t c = 0;
-  int len = 0;
+  int c = 0, len = 0;
+  // EMPTY
   while ((i = jvp_utf8_next(i, end, &c))) len++;
   jv_free(j);
   return len;
 }
 
-uint32_t jv_string_index(jv j, int idx) {
+int jv_string_index(jv j, int idx) {
   assert(JVP_HAS_KIND(j, JV_KIND_STRING));
   const char* i = jv_string_value(j);
   const char* end = i + jv_string_length_bytes(jv_copy(j));
-  uint32_t c = 0;
+  int c = 0;
   switch (jv_get_string_kind(j)) {
   case JV_STRING_KIND_UTF8:
     if (idx < 0) {
@@ -1544,7 +1544,7 @@ jv jv_string_split(jv j, jv sep) {
   assert(jv_get_refcnt(a) == 1);
 
   if (seplen == 0) {
-    uint32_t c;
+    int c;
     while ((jstr = jvp_utf8_next(jstr, jend, &c)))
       a = jv_array_append(a, jv_string_append_codepoint(j.subkind == JV_STRING_KIND_UTF8 ?
                                                           jv_string("") :
@@ -1578,7 +1578,7 @@ jv jv_string_explode(jv j) {
   int len = jv_string_length_bytes(jv_copy(j));
   const char* end = i + len;
   jv a = jv_array_sized(len);
-  uint32_t c;
+  int c;
   while ((i = jvp_utf8_next(i, end, &c)))
     a = jv_array_append(a, jv_number(c));
   jv_free(j);
@@ -1627,7 +1627,7 @@ jv jv_string_slice(jv j, int start, int end) {
   int len = jv_string_length_bytes(jv_copy(j));
   int i;
   const char *p, *e;
-  uint32_t c;
+  int c;
   jv res;
 
   jvp_clamp_slice_params(len, &start, &end);
@@ -1640,7 +1640,7 @@ jv jv_string_slice(jv j, int start, int end) {
       jv_free(j);
       return jv_string_empty(16);
     }
-    if (c == (uint32_t)-1) {
+    if (c == -1) {
       jv_free(j);
       return jv_invalid_with_msg(jv_string("Invalid UTF-8 string"));
     }
@@ -1652,7 +1652,7 @@ jv jv_string_slice(jv j, int start, int end) {
       e = s + len;
       break;
     }
-    if (c == (uint32_t)-1) {
+    if (c == -1) {
       jv_free(j);
       return jv_invalid_with_msg(jv_string("Invalid UTF-8 string"));
     }

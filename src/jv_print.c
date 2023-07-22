@@ -144,11 +144,11 @@ static void jvp_dump_string(struct dtoa_context *C, jv str, int ascii_only, FILE
   const char* i = jv_string_value(str);
   const char* end = i + jv_string_length_bytes(jv_copy(str));
   const char* cstart;
-  uint32_t c = 0;
+  int c = 0;
   char buf[32];
   put_char('"', F, S, T);
   while ((i = jvp_utf8_next((cstart = i), end, &c))) {
-    assert(c != (uint32_t)-1);
+    assert(c != -1);
     int unicode_escape = 0;
     if (0x20 <= c && c <= 0x7E) {
       // printable ASCII
@@ -202,7 +202,7 @@ static void jvp_dump_string(struct dtoa_context *C, jv str, int ascii_only, FILE
       put_str(buf, F, S, T);
     }
   }
-  assert(c != (uint32_t)-1);
+  assert(c != -1);
   put_char('"', F, S, T);
   jv_free(str);
 }
