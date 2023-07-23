@@ -16,6 +16,7 @@ enum jvp_utf8_flags {
 const char* jvp_utf8_wtf_next(const char* in, const char* end, enum jvp_utf8_flags flags, int* codepoint);
 const char* jvp_utf8_next(const char* in, const char* end, int* codepoint);
 const char* jvp_utf8_wtf_next_bytes(const char* in, const char* end, const char** bytes_out, uint32_t* bytes_len);
+const char* jvp_utf8_wtf_next_bytes_limited(const char* in, const char* end, int codepoints_limit, const char** bytes_out, uint32_t* bytes_len);
 int jvp_utf8_wtf_join(const char* astart, uint32_t* alen, const char** bstart, uint32_t* blen, char* out);
 int jvp_utf8_is_valid(const char* in, const char* end);
 

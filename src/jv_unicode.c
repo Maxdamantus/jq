@@ -79,7 +79,7 @@ const char* jvp_utf8_next(const char* in, const char* end, int* codepoint_ret) {
 // array containing the byte). Ill-formed UTF-16 code units are emitted as
 // UTF-8 replacement characters (pointing into a static array containing the
 // bytes for U+FFFD).
-const char* jvp_utf8_wtf_next_bytes(const char* in, const char* end, const char** bytes_out, uint32_t* bytes_len) {
+const char* jvp_utf8_wtf_next_bytes_limited(const char* in, const char* end, int codepoints_limit, const char** bytes_out, uint32_t* bytes_len) {
   // U+FFFD REPLACEMENT CHARACTER
   static const unsigned char UTF8_REPLACEMENT[] = {0xEF,0xBF,0xBD};
   // array of bytes from 0x80 to 0xFF (inclusive)
@@ -98,7 +98,12 @@ const char* jvp_utf8_wtf_next_bytes(const char* in, const char* end, const char*
   const char* cstart;
   int c;
 
-  while ((i = jvp_utf8_wtf_next((cstart = i), end, JVP_UTF8_ERRORS_ALL, &c))) {
+  for (;;) {
+    cstart = i;
+    if (codepoints_limit != -1 && codepoints_limit-- == 0)
+      break;
+    if (!(i = jvp_utf8_wtf_next(i, end, JVP_UTF8_ERRORS_ALL, &c)))
+      break;
     if (c >= -0xFF && c <= -0x80) {
       // invalid UTF-8 byte; pass through
       if (cstart > in) {
@@ -125,6 +130,10 @@ const char* jvp_utf8_wtf_next_bytes(const char* in, const char* end, const char*
   *bytes_len = len;
   *bytes_out = in;
   return len == 0? NULL : cstart;
+}
+
+const char* jvp_utf8_wtf_next_bytes(const char* in, const char* end, const char** bytes_out, uint32_t* bytes_len) {
+  return jvp_utf8_wtf_next_bytes_limited(in, end, -1, bytes_out, bytes_len);
 }
 
 /*

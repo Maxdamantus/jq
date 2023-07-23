@@ -1461,20 +1461,21 @@ jv jv_string_from_binary(jv j) {
   case JV_STRING_KIND_UTF8: return j;
   case JV_STRING_KIND_BINARY: return jv_binary_to_base64(j);
   case JV_STRING_KIND_BINARY_BYTEARRAY: {
-    // mz TODO
     jv a = jv_array();
     const unsigned char *i = (const unsigned char *)jv_string_value(j);
     const unsigned char *end = i + jv_string_length_bytes(jv_copy(j));
 
-    while (i < end)
-      a = jv_array_append(a, jv_number(*(i++)));
+    const char *bytes;
+    uint32_t bytes_len;
+    while ((i = jvp_utf8_wtf_next_bytes(i, end, &bytes, &bytes_len)))
+      for (int x = 0; x < bytes_len; x++)
+        a = jv_array_append(a, jv_number(bytes[x]));
     jv_free(j);
     return a;
   }
   case JV_STRING_KIND_BINARY_UTF8: {
-    jv r = jv_string_sized(jv_string_value(j), jv_string_length_bytes(jv_copy(j)));
-    jv_free(j);
-    return r;
+    j.subkind = JV_STRING_KIND_UTF8;
+    return j;
   }
   default:
     jv_free(j);
@@ -1503,31 +1504,38 @@ int jv_string_index(jv j, int idx) {
   assert(JVP_HAS_KIND(j, JV_KIND_STRING));
   const char* i = jv_string_value(j);
   const char* end = i + jv_string_length_bytes(jv_copy(j));
-  int c = 0;
+  int c = -1;
   switch (jv_get_string_kind(j)) {
   case JV_STRING_KIND_UTF8:
     if (idx < 0) {
       idx += jv_string_length_codepoints(jv_copy(j));
       if (idx < 0)
-        return 0;
+        return -1;
     }
     while (i < end && idx >= 0) {
-      i = jvp_utf8_next(i, end, &c);
+      i = jvp_utf8_wtf_next(i, end, JVP_UTF8_ERRORS_ALL, &c);
       idx--;
     }
     if (i == end && idx != -1)
-      c = 0;
+      c = -1;
     break;
   case JV_STRING_KIND_BINARY:
   case JV_STRING_KIND_BINARY_BYTEARRAY:
   case JV_STRING_KIND_BINARY_UTF8:
-    if (idx < 0)
-      idx += end - i;
-    if (idx < 0)
-      return 0;
-    if (i + idx >= end)
-      return 0;
-    c = ((const unsigned char *)i)[idx];
+    const char *bytes;
+    uint32_t bytes_len;
+    if (idx < 0) {
+      const char *j = i;
+      while ((j = jvp_utf8_wtf_next_bytes(i, end, &bytes, &bytes_len)))
+        idx += bytes_len;
+    }
+    while ((i = jvp_utf8_wtf_next_bytes(i, end, &bytes, &bytes_len))) {
+      if (idx < bytes_len) {
+        c = ((const unsigned char *)bytes)[idx];
+        break;
+      }
+      idx -= bytes_len;
+    }
     break;
   default:
     break;
@@ -1724,10 +1732,6 @@ jv jv_string_append_buf(jv a, const char* buf, int len) {
 }
 
 jv jv_string_append_codepoint(jv a, uint32_t c) {
-  if (a.subkind != JV_STRING_KIND_UTF8 && c < 256) {
-    unsigned char uc = c;
-    return jvp_string_append(a, (char *)&uc, 1);
-  }
   char buf[5];
   int len = jvp_utf8_encode(c, buf);
   return jvp_string_append(a, buf, len);

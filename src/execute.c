@@ -676,23 +676,17 @@ jv jq_next(jq_state *jq) {
       jv k = stack_pop(jq);
       jv v;
       if (jv_get_kind(t) == JV_KIND_STRING && jv_get_kind(k) == JV_KIND_NUMBER) {
+        int elem = jv_string_index(t, jv_number_value(k));
+        if (elem == -1)
+          goto do_backtrack;
         switch (jv_get_string_kind(t)) {
         case JV_STRING_KIND_UTF8:
-          v = jv_string_append_codepoint(jv_string(""), jv_string_index(t, jv_number_value(k)));
+          v = jv_string_append_codepoint(jv_string(""), elem);
           break;
         case JV_STRING_KIND_BINARY:
         case JV_STRING_KIND_BINARY_BYTEARRAY:
         case JV_STRING_KIND_BINARY_UTF8: {
-          const char *s = jv_string_value(t);
-          int len = jv_string_length_bytes(jv_copy(t));
-          int idx = jv_number_value(k);
-
-          if (idx < 0)
-            idx += idx;
-          if (idx < 0 || idx >= len)
-            goto do_backtrack;
-          v = jv_number(((unsigned char *)s)[idx]);
-          jv_free(t);
+          v = jv_number(elem);
           break;
         }
         default:
@@ -802,25 +796,50 @@ jv jq_next(jq_state *jq) {
             next = s + idx;
           }
           keep_going = idx < len;
-          next = jvp_utf8_next(next, end, &c);
+          // TODO: handle empty strings
+          next = jvp_utf8_wtf_next(next, end, JVP_UTF8_ERRORS_ALL, &c);
           idx = next - s;
           value = jv_string_append_codepoint(jv_string(""), c);
-          is_last = jvp_utf8_next(next, end, &c) == 0;
+          is_last = jvp_utf8_wtf_next(next, end, JVP_UTF8_ERRORS_ALL, &c) == 0;
           break;
         }
         case JV_STRING_KIND_BINARY:
         case JV_STRING_KIND_BINARY_BYTEARRAY:
         case JV_STRING_KIND_BINARY_UTF8: {
-          const unsigned char *s = (const unsigned char *)jv_string_value(container);
+          const char *s = jv_string_value(container);
           int len = jv_string_length_bytes(jv_copy(container));
+          const char *end = s + len;
+          uint8_t cpIdx;
           if (opcode == EACH || opcode == EACH_OPT) {
+            cpIdx = 0;
             idx = 0;
           } else {
-            idx++;
+            // HACK: when pushed onto the stack, `idx` is storing two numbers:
+            // the byte offset of the current encoded code point (or error), and
+            // the offset within the UTF-8 encoding of that code point (or error)
+            cpIdx = idx % 4;
+            idx /= 4;
           }
+          const char *current = s + idx;
           keep_going = idx < len;
-          value = jv_string_append_codepoint(jv_string(""), s[idx]);
-          is_last = idx == len -1;
+          // TODO: handle empty strings
+          const char *bytes;
+          uint32_t bytes_len;
+          char *next = jvp_utf8_wtf_next_bytes_limited(current, end, 1, &bytes, &bytes_len);
+          assert(bytes_len <= 4);
+          assert(cpIdx < bytes_len);
+          char byte = bytes[cpIdx++];
+          if (cpIdx == bytes_len)
+            idx = (next - s)*4 + 0;
+          else
+            idx = (current - s)*4 + cpIdx;
+	  // TODO: check that this is a reasonable limit? might overflow when
+	  // iterating 128 MiB strings, possibly solvable by using a 64-bit
+	  // integer
+          assert(idx >= 0);
+          // TODO: should this copy the subkind from the container?
+          value = jv_string_sized(&byte, 1);
+          is_last = next == end;
           break;
         }
         default:
