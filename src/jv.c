@@ -1103,20 +1103,24 @@ static jvp_string* jvp_string_alloc(uint32_t size) {
   return s;
 }
 
-/* Copy a UTF8 string, replacing all badly encoded points with U+FFFD */
+/* Copy a UTF8 string, using WTF-8b to replace all UTF-8 errors */
 static jv jvp_string_copy_replace_bad(const char* data, uint32_t length) {
   const char* end = data + length;
   const char* i = data;
   const char* cstart;
 
-  uint32_t maxlength = length * 3 + 1; // worst case: all bad bytes, each becomes a 3-byte U+FFFD
+  uint32_t maxlength = length * 2 + 1; // worst case: all bad bytes, each becomes a 2-byte overlong U+XX
   jvp_string* s = jvp_string_alloc(maxlength);
   char* out = s->data;
   int c = 0;
 
-  while ((i = jvp_utf8_next((cstart = i), end, &c))) {
+  while ((i = jvp_utf8_wtf_next((cstart = i), end, 0, &c))) {
     if (c == -1) {
-      c = 0xFFFD; // U+FFFD REPLACEMENT CHARACTER
+      int error = (unsigned char)*cstart;
+      assert(error >= 0x80 && error <= 0xFF);
+      c = -error;
+      /* Ensure each UTF-8 error byte is consumed separately */
+      i = cstart + 1;
     }
     out += jvp_utf8_encode(c, out);
     assert(out < s->data + maxlength);
@@ -1128,8 +1132,8 @@ static jv jvp_string_copy_replace_bad(const char* data, uint32_t length) {
   return r;
 }
 
-/* Assumes valid UTF8 */
-static jv jvp_string_new(const char* data, uint32_t length) {
+/* Assumes valid WTF-8b */
+jv jv_string_wtf_sized(const char* data, int length) {
   jvp_string* s = jvp_string_alloc(length);
   s->length_hashed = length << 1;
   if (data != NULL)
@@ -1169,20 +1173,27 @@ static jv jvp_string_append(jv string, const char* data, uint32_t len) {
   jvp_string* s = jvp_string_ptr(string);
   uint32_t currlen = jvp_string_length(s);
 
+  char join_buf[4];
+  int join_len = jvp_utf8_wtf_join(s->data, &currlen, &data, &len, join_buf);
+
   if (jvp_refcnt_unshared(string.u.ptr) &&
-      jvp_string_remaining_space(s) >= len) {
+      jvp_string_remaining_space(s) >= join_len + len) {
     // the next string fits at the end of a
+    memcpy(s->data + currlen, join_buf, join_len);
+    currlen += join_len;
     memcpy(s->data + currlen, data, len);
     s->data[currlen + len] = 0;
     s->length_hashed = (currlen + len) << 1;
     return string;
   } else {
     // allocate a bigger buffer and copy
-    uint32_t allocsz = (currlen + len) * 2;
+    uint32_t allocsz = (currlen + join_len + len) * 2;
     if (allocsz < 32) allocsz = 32;
     jvp_string* news = jvp_string_alloc(allocsz);
-    news->length_hashed = (currlen + len) << 1;
+    news->length_hashed = (currlen + join_len + len) << 1;
     memcpy(news->data, s->data, currlen);
+    memcpy(news->data + currlen, join_buf, join_len);
+    currlen += join_len;
     memcpy(news->data + currlen, data, len);
     news->data[currlen + len] = 0;
     jv r = {JVP_FLAGS_STRING, string.subkind, 0, 0, {&news->refcnt}};
@@ -1268,7 +1279,7 @@ static int jvp_string_equal(jv a, jv b) {
  */
 
 jv jv_binary_sized(const unsigned char *str, int len) {
-  jv b = jvp_string_new((const char *)str, len);
+  jv b = jv_string_sized((const char *)str, len);
   b.subkind = JV_STRING_KIND_BINARY;
   return b;
 }
@@ -1295,6 +1306,7 @@ jv jv_binary_slice(jv j, int start, int end) {
   assert(0 <= start && start <= end && end <= len);
 
   /* See note in jv_string_slice() */
+  // mz TODO
   res = jv_binary_sized(s + start, end - start);
   jv_free(j);
   return res;
@@ -1329,22 +1341,37 @@ static const unsigned char BASE64_DECODE_TABLE[255] = {
 };
 
 jv jv_binary_to_base64(jv input) {
-  const unsigned char* data = (const unsigned char*)jv_string_value(input);
-  int len = jv_string_length_bytes(jv_copy(input));
   jv out = jv_string("");
-  for (int i=0; i<len; i+=3) {
-    uint32_t code = 0;
-    int n = len - i >= 3 ? 3 : len-i;
-    for (int j=0; j<3; j++) {
+  const char* i = jv_string_value(input);
+  const char* end = i + jv_string_length_bytes(jv_copy(input));
+  uint32_t code = 0;
+  int n = 0;
+  const char *bytes;
+  uint32_t bytes_len;
+  while ((i = jvp_utf8_wtf_next_bytes(i, end, &bytes, &bytes_len))) {
+    unsigned char *ubuf = (unsigned char *)bytes;
+    for (uint32_t x = 0; x < bytes_len; x++) {
       code <<= 8;
-      code |= j < n ? (unsigned)data[i+j] : 0;
+      code |= ubuf[x];
+      if (++n == 3) {
+        char buf[4];
+        for (int j = 0; j < 4; j++)
+          buf[j] = BASE64_ENCODE_TABLE[(code >> (18 - j*6)) & 0x3f];
+        out = jv_string_append_buf(out, buf, sizeof(buf));
+        n = 0;
+        code = 0;
+      }
     }
+  }
+  if (n > 0) {
+    assert(n < 3);
+    code <<= 8*(3 - n);
     char buf[4];
-    for (int j=0; j<4; j++) {
+    for (int j = 0; j < 4; j++)
       buf[j] = BASE64_ENCODE_TABLE[(code >> (18 - j*6)) & 0x3f];
-    }
-    if (n < 3) buf[3] = '=';
-    if (n < 2) buf[2] = '=';
+    buf[3] = '=';
+    if (n < 2)
+      buf[2] = '=';
     out = jv_string_append_buf(out, buf, sizeof(buf));
   }
   jv_free(input);
@@ -1412,7 +1439,7 @@ jv jv_binary_from_base64(jv input) {
 jv jv_string_sized(const char* str, int len) {
   return
     jvp_utf8_is_valid(str, str+len) ?
-    jvp_string_new(str, len) :
+    jv_string_wtf_sized(str, len) :
     jvp_string_copy_replace_bad(str, len);
 }
 
@@ -1434,6 +1461,7 @@ jv jv_string_from_binary(jv j) {
   case JV_STRING_KIND_UTF8: return j;
   case JV_STRING_KIND_BINARY: return jv_binary_to_base64(j);
   case JV_STRING_KIND_BINARY_BYTEARRAY: {
+    // mz TODO
     jv a = jv_array();
     const unsigned char *i = (const unsigned char *)jv_string_value(j);
     const unsigned char *end = i + jv_string_length_bytes(jv_copy(j));
@@ -1466,7 +1494,6 @@ int jv_string_length_codepoints(jv j) {
   const char* i = jv_string_value(j);
   const char* end = i + jv_string_length_bytes(jv_copy(j));
   int c = 0, len = 0;
-  // EMPTY
   while ((i = jvp_utf8_next(i, end, &c))) len++;
   jv_free(j);
   return len;
@@ -1545,7 +1572,7 @@ jv jv_string_split(jv j, jv sep) {
 
   if (seplen == 0) {
     int c;
-    while ((jstr = jvp_utf8_next(jstr, jend, &c)))
+    while ((jstr = jvp_utf8_wtf_next(jstr, jend, JVP_UTF8_ERRORS_ALL, &c)))
       a = jv_array_append(a, jv_string_append_codepoint(j.subkind == JV_STRING_KIND_UTF8 ?
                                                           jv_string("") :
                                                           jv_binary((const unsigned char *)""),
@@ -1555,11 +1582,8 @@ jv jv_string_split(jv j, jv sep) {
       s = _jq_memmem(p, jend - p, sepstr, seplen);
       if (s == NULL)
         s = jend;
-      a = jv_array_append(a,
-                          j.subkind == JV_STRING_KIND_UTF8 ?
-                            jv_string_sized(p, s - p) :
-                            jv_binary_sized((const unsigned char *)p, s - p));
-      // Add an empty string o denote that j ends on a sep
+      a = jv_array_append(a, jv_string_wtf_sized(p, s - p));
+      // Add an empty string to denote that j ends on a sep
       if (s + seplen == jend && seplen != 0)
         a = jv_array_append(a,
                             j.subkind == JV_STRING_KIND_UTF8 ?
@@ -1579,8 +1603,13 @@ jv jv_string_explode(jv j) {
   const char* end = i + len;
   jv a = jv_array_sized(len);
   int c;
-  while ((i = jvp_utf8_next(i, end, &c)))
+  while ((i = jvp_utf8_wtf_next(i, end, JVP_UTF8_ERRORS_ALL, &c))) {
+    // UTF-16 errors are emitted as negative integers to clearly distinguish them from valid Unicode text
+    // UTF-8 errors are already negated when using `JVP_UTF8_ERRORS_ALL`
+    if (c >= 0xD800 && c <= 0xDFFF)
+      c = -c;
     a = jv_array_append(a, jv_number(c));
+  }
   jv_free(j);
   return a;
 }
@@ -1598,7 +1627,13 @@ jv jv_string_implode(jv j) {
     assert(JVP_HAS_KIND(n, JV_KIND_NUMBER));
     int nv = jv_number_value(n);
     jv_free(n);
-    if (nv > 0x10FFFF)
+    // UTF-16 errors are represented as negative integers to clearly distinguish them from valid Unicode text
+    if (nv >= -0xDFFF && nv <= -0xD800) {
+      // convert negative UTF-16 errors into positive errors as expected by `jv_string_append_codepoint`
+      nv = -nv;
+    } else if (nv >= -0xFF && nv <= -0x80) {
+      // negative UTF-8 errors are already in the representation expected by `jv_string_append_codepoint`
+    } else if (nv < 0 || (nv >= 0xD800 && nv <= 0xDFFF) || nv > 0x10FFFF)
       nv = 0xFFFD; // U+FFFD REPLACEMENT CHARACTER
     s = jv_string_append_codepoint(s, nv);
   }
@@ -1635,7 +1670,7 @@ jv jv_string_slice(jv j, int start, int end) {
 
   /* Look for byte offset corresponding to start codepoints */
   for (p = s, i = 0; i < start; i++) {
-    p = jvp_utf8_next(p, s + len, &c);
+    p = jvp_utf8_wtf_next(p, s + len, JVP_UTF8_ERRORS_ALL, &c);
     if (p == NULL) {
       jv_free(j);
       return jv_string_empty(16);
@@ -1647,7 +1682,7 @@ jv jv_string_slice(jv j, int start, int end) {
   }
   /* Look for byte offset corresponding to end codepoints */
   for (e = p; e != NULL && i < end; i++) {
-    e = jvp_utf8_next(e, s + len, &c);
+    e = jvp_utf8_wtf_next(e, s + len, JVP_UTF8_ERRORS_ALL, &c);
     if (e == NULL) {
       e = s + len;
       break;
@@ -1665,7 +1700,7 @@ jv jv_string_slice(jv j, int start, int end) {
    * memory like a drunken navy programmer.  There's probably nothing we
    * can do about it.
    */
-  res = jv_string_sized(p, e - p);
+  res = jv_string_wtf_sized(p, e - p);
   jv_free(j);
   return res;
 }

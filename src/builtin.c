@@ -482,7 +482,7 @@ static jv f_dump(jq_state *jq, jv input) {
 static jv f_json_parse(jq_state *jq, jv input) {
   if (jv_get_kind(input) != JV_KIND_STRING)
     return type_error(input, "only strings can be parsed");
-  jv res = jv_parse_sized(jv_string_value(input),
+  jv res = jv_parse_wtf_sized(jv_string_value(input),
                           jv_string_length_bytes(jv_copy(input)));
   jv_free(input);
   return res;
@@ -539,7 +539,15 @@ static jv f_tostring(jq_state *jq, jv input) {
 static jv f_utf8bytelength(jq_state *jq, jv input) {
   if (jv_get_kind(input) != JV_KIND_STRING)
     return type_error(input, "only strings have UTF-8 byte length");
-  return jv_number(jv_string_length_bytes(input));
+  const char* i = jv_string_value(input);
+  const char* end = i + jv_string_length_bytes(jv_copy(input));
+  uint32_t len = 0;
+  const char *bytes;
+  uint32_t bytes_len;
+  while ((i = jvp_utf8_wtf_next_bytes(i, end, &bytes, &bytes_len)))
+    len += bytes_len;
+  jv_free(input);
+  return jv_number(len);
 }
 
 #define CHARS_ALPHANUM "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
@@ -650,16 +658,19 @@ static jv f_format(jq_state *jq, jv input, jv fmt) {
     while (*p) unreserved[(int)*p++] = 1;
 
     jv line = jv_string("");
-    const char* s = jv_string_value(input);
-    for (int i=0; i<jv_string_length_bytes(jv_copy(input)); i++) {
-      unsigned ch = (unsigned)(unsigned char)*s;
-      if (ch < 128 && unreserved[ch]) {
-        line = jv_string_append_buf(line, s, 1);
-      } else {
-        line = jv_string_concat(line, jv_string_fmt("%%%02X", ch));
+    const char *start = jv_string_value(input);
+    const char *end = start + jv_string_length_bytes(jv_copy(input));
+    const char *bytes;
+    uint32_t bytes_len;
+    while ((start = jvp_utf8_wtf_next_bytes(start, end, &bytes, &bytes_len)))
+      for (uint32_t i = 0; i < bytes_len; i++) {
+        unsigned ch = (unsigned)(unsigned char)bytes[i];
+        if (ch < 128 && unreserved[ch]) {
+          line = jv_string_append_buf(line, &bytes[i], 1);
+        } else {
+          line = jv_string_concat(line, jv_string_fmt("%%%02X", ch));
+        }
       }
-      s++;
-    }
     jv_free(input);
     return line;
   } else if (!strcmp(fmt_s, "sh")) {

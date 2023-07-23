@@ -98,6 +98,16 @@ static void put_char(char c, FILE* fout, jv* strout, int T) {
   put_buf(&c, 1, fout, strout, T);
 }
 
+static void put_invalid_utf8_byte(int c, FILE* fout, jv* strout, int T) {
+  assert(c >= 0x80 && c <= 0xFF);
+  if (strout) {
+    // encode as an invalid UTF-8 byte in output
+    *strout = jv_string_append_codepoint(*strout, -c);
+  } else {
+    put_char(c, fout, strout, T);
+  }
+}
+
 static void put_str(const char* s, FILE* fout, jv* strout, int T) {
   put_buf(s, strlen(s), fout, strout, T);
 }
@@ -147,7 +157,7 @@ static void jvp_dump_string(struct dtoa_context *C, jv str, int ascii_only, FILE
   int c = 0;
   char buf[32];
   put_char('"', F, S, T);
-  while ((i = jvp_utf8_next((cstart = i), end, &c))) {
+  while ((i = jvp_utf8_wtf_next((cstart = i), end, JVP_UTF8_ERRORS_ALL, &c))) {
     assert(c != -1);
     int unicode_escape = 0;
     if (0x20 <= c && c <= 0x7E) {
@@ -156,6 +166,17 @@ static void jvp_dump_string(struct dtoa_context *C, jv str, int ascii_only, FILE
         put_char('\\', F, S, T);
       }
       put_char(c, F, S, T);
+    } else if (c >= -0xFF && c <= -0x80) {
+      // Invalid UTF-8 byte
+      if (ascii_only) {
+        // refusing to emit invalid UTF-8
+        // TODO: convince the world to adopt a "\xXX" notation for JSON?
+        c = 0xFFFD; // U+FFFD REPLACEMENT CHARACTER
+        unicode_escape = 1;
+      } else {
+        // pass through
+        put_invalid_utf8_byte(-c, F, S, T);
+      }
     } else if (c < 0x20 || c == 0x7F) {
       // ASCII control character
       switch (c) {
@@ -185,6 +206,9 @@ static void jvp_dump_string(struct dtoa_context *C, jv str, int ascii_only, FILE
       }
     } else {
       if (ascii_only) {
+        unicode_escape = 1;
+      } else if (c >= 0xD800 && c <= 0xDFFF) {
+        // lone surrogate; can't be encoded to UTF-8
         unicode_escape = 1;
       } else {
         put_buf(cstart, i - cstart, F, S, T);
